@@ -139,13 +139,17 @@ def use_models(name: str | None = "auto") -> str:
     return name
 
 
-def _have_sage() -> bool:
-    """SageAttention is optional: without the package the LTX jobs skip the patch."""
+def _have_sage(mode: str) -> bool:
+    """SageAttention is optional: the LTX jobs skip the patch when the installed package lacks the
+    mode's kernel (SageAttention 1.x has no fp8 CUDA kernel, and KJ's patch then fails every clip)."""
+    import importlib.util
+    if "sageattn3" in mode:
+        return importlib.util.find_spec("sageattn3") is not None
     try:
-        import importlib.util
-        return importlib.util.find_spec("sageattention") is not None
-    except Exception:
+        import sageattention
+    except ImportError:
         return False
+    return mode == "auto" or hasattr(sageattention, mode.rstrip("+"))
 
 
 M: dict = {}
@@ -249,7 +253,7 @@ def _ram_backups(g, model):
 def _ltx23(g, union=False):
     ck = g.add("CheckpointLoaderSimple", ckpt_name=M["ltx23_ckpt"])
     model = _ram_backups(g, O(ck, 0))
-    if M.get("ltx23_sage") and _have_sage():
+    if M.get("ltx23_sage") and _have_sage(M["ltx23_sage"]):
         model = O(g.add("PathchSageAttentionKJ", model=model, sage_attention=M["ltx23_sage"],
                         allow_compile=False))
     for name, st in M["ltx23_loras"]:
