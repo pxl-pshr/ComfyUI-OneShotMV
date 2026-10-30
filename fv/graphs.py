@@ -187,16 +187,35 @@ def _save_video(g, images, fps, prefix, audio=None):
 
 
 # ------------------------------------------------------------------ Krea 2 W5
+def _krea_subject_card(g, ref):
+    """One photo as a Krea subject card. Full mode passes the visual tokens. Role subject asks
+    for that person's appearance and leaves the setting to the scene prompt. Resolution is the
+    longest side before the vision encoder; 1280 is this node's maximum."""
+    return g.add("FL_KreaReference", image=O(ref), enabled=True, role="subject", weight=1.0,
+                 resolution=1280, start=0.0, end=1.0, fade=0.0, reference_mode="full")
+
+
+def _krea_subject_guide(g, model, clip, prompt, card):
+    """Blend that card into one Krea model. Influence 1 uses only the image-aware encoding,
+    which still contains the scene prompt, so a text-only pass cannot invent a different face.
+    Returns (MODEL, CONDITIONING). CFG on the sampler stays 1. The autogrow socket is
+    references.reference_0: ComfyUI numbers the first card from zero."""
+    guided = g.add("FL_KreaReferenceGuider", model=model, clip=O(clip), prompt=prompt, influence=1.0,
+                   **{"references.reference_0": O(card)})
+    return O(guided, 1), O(guided, 2)
+
+
 def krea2_portrait(*, prompt, seed, prefix, size1, size2, denoise=0.25, turbo_only=False, ref_path=""):
     """Krea 2 W5 hybrid (Turbo composes, RAW + Turbo LoRA redetails). turbo_only=True uses the
     Turbo model for both passes: one model to load instead of two (the fast preset).
     denoise: how hard the RAW pass redetails the upscaled image; 0.40 looks too gritty, so 0.25
     keeps Turbo's cleaner composition and adds less texture. A set that names the same file for
     Turbo and RAW also runs Turbo for both passes (the Turbo LoRA is only for the RAW model).
-    ref_path: a photo of a real person. Text Encode Qwen Image Edit Plus feeds it to the Qwen3-VL
-    encoder as Picture 1. The basic Edit node is the wrong one here: Krea 2 strips the system
-    prefix and that node's image template has no system turn, so the photo would be cut off.
-    Krea's sampler ignores reference latents; the vision tokens are what carry the face."""
+    ref_path: a photo of one person. FL Krea Reference (subject, full) feeds it to the guider,
+    and both samplers use that guider's model and conditioning. Krea's DiT ignores reference
+    latents, so Text Encode Qwen Image Edit Plus is only the fallback where the Fill nodes
+    are not installed. That fallback has to be Edit Plus, not the basic Edit node: Krea 2
+    strips the system prefix, and the basic node's image template has no system turn."""
     g = Graph()
     turbo = g.add("UNETLoader", unet_name=M["krea_turbo"], weight_dtype="default")
     if turbo_only or M["krea_raw"] == M["krea_turbo"]:
@@ -206,22 +225,32 @@ def krea2_portrait(*, prompt, seed, prefix, size1, size2, denoise=0.25, turbo_on
         lora = g.add("LoraLoaderModelOnly", model=O(raw), lora_name=M["krea_turbo_lora"], strength_model=0.6)
     clip = g.add("CLIPLoader", clip_name=M["krea_te"], type="krea2", device="default")
     vae = g.add("VAELoader", vae_name=M["krea_vae"])
-    if ref_path:
+    if ref_path and _has_node("FL_KreaReference") and _has_node("FL_KreaReferenceGuider"):
         ref = g.add("FVLoadImagePath", path=ref_path)
-        pos = g.add("TextEncodeQwenImageEditPlus", clip=O(clip), prompt=prompt, vae=O(vae), image1=O(ref))
+        card = _krea_subject_card(g, ref)
+        model_a, pos = _krea_subject_guide(g, O(turbo), clip, prompt, card)
+        # a second model needs its own patched copy; the card and the conditioning are shared
+        model_b = model_a if lora == turbo else _krea_subject_guide(g, O(lora), clip, prompt, card)[0]
+    elif ref_path:
+        ref = g.add("FVLoadImagePath", path=ref_path)
+        seen = ("The person in Picture 1 is the subject. Keep their exact face, age, bone structure, "
+                "skin tone, hair and glasses. " + prompt)
+        pos_id = g.add("TextEncodeQwenImageEditPlus", clip=O(clip), prompt=seen, vae=O(vae), image1=O(ref))
+        model_a, model_b, pos = O(turbo), O(lora), O(pos_id)
     else:
-        pos = g.add("CLIPTextEncode", clip=O(clip), text=prompt)
-    neg = g.add("ConditioningZeroOut", conditioning=O(pos))
+        pos_id = g.add("CLIPTextEncode", clip=O(clip), text=prompt)
+        model_a, model_b, pos = O(turbo), O(lora), O(pos_id)
+    neg = g.add("ConditioningZeroOut", conditioning=pos)
     lat = g.add("EmptyLatentImage", width=size1[0], height=size1[1], batch_size=1)
-    ks = g.add("KSampler", model=O(turbo), seed=seed, steps=8, cfg=1.0, sampler_name="euler",
-               scheduler="simple", positive=O(pos), negative=O(neg), latent_image=O(lat), denoise=1.0)
+    ks = g.add("KSampler", model=model_a, seed=seed, steps=8, cfg=1.0, sampler_name="euler",
+               scheduler="simple", positive=pos, negative=O(neg), latent_image=O(lat), denoise=1.0)
     dec = g.add("VAEDecode", samples=O(ks), vae=O(vae))
     up = g.add("ImageScale", image=O(dec), upscale_method="lanczos", width=size2[0], height=size2[1],
                crop="disabled")
     enc = g.add("VAEEncode", pixels=O(up), vae=O(vae))
     cs = g.add("ClownsharKSampler_Beta", eta=0.5, sampler_name="multistep/deis_2m", scheduler="beta",
                steps=8, steps_to_run=-1, denoise=denoise, cfg=1.0, seed=seed, sampler_mode="standard",
-               bongmath=True, model=O(lora), positive=O(pos), negative=O(neg), latent_image=O(enc))
+               bongmath=True, model=model_b, positive=pos, negative=O(neg), latent_image=O(enc))
     dec2 = g.add("VAEDecode", samples=O(cs, 0), vae=O(vae))
     g.add("SaveImage", images=O(dec2), filename_prefix=prefix)
     return g

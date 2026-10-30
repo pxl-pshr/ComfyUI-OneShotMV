@@ -161,8 +161,9 @@ Some things that help:
   cast in that order and reused across the singers. The World line still sets the clothes, the
   places and the light. Pose-matched looks turn off, so a look edit does not recast the face.
   Cutaways can still be other people from the World; set cutaways to none if every shot should
-  be these people. The photo is restaged by Krea 2. On the 24 GB models the face is close to
-  the photo, not exact.
+  be these people. Each photo is a Krea 2 character reference for that person, so the
+  face, hair and glasses follow the photo. The World line still changes the clothes, the
+  place and the light. It is a new photograph of that person, not a copy of the photo.
 
 ## Settings
 

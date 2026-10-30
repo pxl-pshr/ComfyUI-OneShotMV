@@ -73,7 +73,7 @@ def clip_info(path: str) -> tuple[int, float]:
 _REF_CAP = 12
 _REF_TTL = 30 * 60
 _ENCODE_TEXT = {"CLIPTextEncode": "text", "TextEncodeQwenImageEdit": "prompt",
-                "TextEncodeQwenImageEditPlus": "prompt"}
+                "TextEncodeQwenImageEditPlus": "prompt", "FL_KreaReferenceGuider": "prompt"}
 
 
 def _search_dirs() -> list[str]:
@@ -226,12 +226,90 @@ def _run_references(references, log=print) -> list[dict]:
     return parse_references(references, log=log)
 
 
-def _reference_portrait(name: str, note: str, portrait: str) -> str:
+# A filename used as the name ("HPjyXQRW0AAJ8qc") tells the model nothing about the person.
+# A short given name has no digit and no underscore, so it is kept.
+# Hair, makeup and eyewear written into a World's outfit. The photo owns those.
+_IDENTITY_PHRASE = re.compile(
+    r"(?i)(?:\b(?:with|and)\b\s+)?(?:[\w'-]+\s+){0,6}?"
+    r"\b(?:hair|hairstyle|hairdo|ponytail|pigtails?|bangs|fringe|braids?|updo|scrunchie|"
+    r"barrettes?|headband|wig|dreadlocks?|afro|mohawk|mullet|beard|moustache|mustache|goatee|"
+    r"stubble|makeup|lipstick|eyeshadow|eyeliner|mascara|blush|rhinestones?|eyelashes|glasses|"
+    r"sunglasses|eyewear)\b")
+_REF_FRAME = {
+    "close": ("Head-and-shoulders portrait, standing upright, singing straight into the lens "
+              "with the mouth open mid-word, shot from eye level on a 50mm lens, with clear space "
+              "above the head and both shoulders in frame, the face about a third of the frame height"),
+    "medium": ("Medium shot on a 35mm lens at chest height, filling the whole frame edge to edge, "
+               "singing toward the camera with the mouth open mid-word"),
+    "wide": ("Wide full-body shot on a 24mm lens a few meters away, filling the whole frame edge to edge, "
+             "singing toward the camera with the mouth open mid-word"),
+}
+
+
+def _person_name(name: str) -> str:
+    name = re.sub(r"\s+", " ", (name or "").strip())
+    if not name:
+        return "this person"
+    if " " not in name and (re.search(r"\d", name) or "_" in name or len(name) >= 16):
+        return "this person"
+    return name
+
+
+def _clothes_only(wear: str) -> str:
+    """The outfit without the World's hair, makeup or glasses, which would repaint the photo."""
+    text = re.sub(r"(?i)^wearing\s+", "", (wear or "").strip()).strip(" .")
+    kept = []
+    for part in re.split(r",\s*", text):
+        part = _IDENTITY_PHRASE.sub(" ", part)
+        part = re.sub(r"(?i)^(?:and|with|or)\s+", "", part)
+        part = re.sub(r"(?i)\s+(?:and|with|or)$", "", part)
+        part = re.sub(r"\s{2,}", " ", part).strip(" ,.-")
+        if part:
+            kept.append(part)
+    return ", ".join(kept)
+
+
+def _realism_tail(portrait: str) -> str:
+    """The photograph brief finish_prompt appended, kept so a reference still reads as a photo."""
+    for marker in ("A single grown adult", "Unretouched photograph"):
+        i = portrait.find(marker)
+        if i >= 0:
+            return portrait[i:].strip()
+    return ""
+
+
+def _reference_portrait(name: str, note: str, portrait: str, *, wear: str = "", light: str = "",
+                        place: str = "", era: str = "", size: str = "close") -> str:
+    """Scene for a Krea subject reference. The photo supplies the face, age, hair and glasses.
+    The World supplies clothes, place and light. The node's own subject line already says to
+    follow the scene for the setting, so this text does not describe a second, invented person."""
+    who = _person_name(name)
     note = re.sub(r"\s+", " ", (note or "").strip()).strip(".")
-    note_bit = f" {note}." if note else ""
-    text = (f"The person in Picture 1 is {name}. Keep their exact face, age, bone structure, "
-            f"skin tone and hair.{note_bit} Make a new photograph of that same person: {portrait}")
-    return " ".join(text.split())
+    clothes = _clothes_only(wear)
+    light = re.sub(r"\s+", " ", (light or "").strip()).strip(".")
+    place = re.sub(r"\s+", " ", (place or "").strip()).strip(".")
+    era = re.sub(r"\s+", " ", (era or "").strip()).strip(".")
+    if light:
+        light = light[:1].upper() + light[1:]
+    bits = [
+        f"{_REF_FRAME.get(size) or _REF_FRAME['close']} of {who}.",
+        "The same person as the reference photo: the same face, the same age, the same bone "
+        "structure, the same skin tone, the same hair and the same glasses.",
+        "Change only the clothes, the place and the light.",
+    ]
+    if note:
+        bits.append(note + ".")
+    if clothes:
+        bits.append(f"Wearing {clothes}.")
+    if light:
+        bits.append(light + ".")
+    if place:
+        bits.append(f"Background: {place}.")
+    if era:
+        bits.append(era + ".")
+    tail = _realism_tail(portrait)
+    bits.append(tail or "One person in frame. No text, signs or lettering anywhere.")
+    return " ".join(" ".join(bits).split())
 
 
 def _apply_references(cast: list[dict], refs: list[dict]) -> None:
@@ -242,7 +320,15 @@ def _apply_references(cast: list[dict], refs: list[dict]) -> None:
     for c in cast:
         ref = refs[int(c["id"]) % len(refs)]
         name = ref["name"]
-        c["portrait"] = _reference_portrait(name, ref.get("note", ""), c.get("portrait") or "")
+        twin = c.get("twin") or {}
+        ck = c.get("check") or {}
+        c["portrait"] = _reference_portrait(
+            name, ref.get("note", ""), c.get("portrait") or "",
+            wear=ck.get("wear") or twin.get("wear") or "",
+            light=twin.get("light") or "",
+            place=ck.get("place") or twin.get("background") or "",
+            era=twin.get("detail") or "",
+            size=c.get("size") or "close")
         c["ref_path"] = ref["path"]
         c["ref_name"] = name
         c["who"] = name
@@ -423,8 +509,8 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
         if refs:
             _apply_references(cast, refs)
             p["references"] = [{"name": r["name"], "path": r["path"], "note": r.get("note", "")} for r in refs]
-            log(f"[OneShotMV] reference characters: {len(refs)} photo(s), cycled across the singers: "
-                + ", ".join(r["name"] for r in refs))
+            log(f"[OneShotMV] reference characters: {len(refs)} photo(s), each a Krea subject reference, "
+                f"cycled across the singers: " + ", ".join(r["name"] for r in refs))
         s1, s2 = formats.portrait_size(fmt)
         port = {}
         need_portrait = {r["performer"] for r in p["renders"] if r["role"] == "A" or editor == "qwen"}
