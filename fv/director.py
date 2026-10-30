@@ -234,6 +234,13 @@ _IDENTITY_PHRASE = re.compile(
     r"barrettes?|headband|wig|dreadlocks?|afro|mohawk|mullet|beard|moustache|mustache|goatee|"
     r"stubble|makeup|lipstick|eyeshadow|eyeliner|mascara|blush|rhinestones?|eyelashes|glasses|"
     r"sunglasses|eyewear)\b")
+# The photo, cropped to the head, re-made as a plain studio headshot once per run: every portrait
+# is an edit of it, so a hand at the face, jewellery or a prop in the photo is not copied into them.
+_REF_SHEET = ("Photo of the same person as in image 1: a plain studio portrait, head and shoulders, facing the "
+              "camera, mouth closed, both arms down at their sides and both hands out of the frame, nothing "
+              "touching the face. Keep their exact face, age, bone structure, skin tone, hair, beard, makeup and "
+              "glasses. A plain grey crew-neck t-shirt, no jewellery, no gloves, no props. Plain mid-grey studio "
+              "backdrop filling the whole frame, soft even light.")
 _REF_FRAME = {
     "close": ("Head-and-shoulders portrait, standing upright, singing straight into the lens "
               "with the mouth open mid-word, shot from eye level on a 50mm lens, with clear space "
@@ -513,20 +520,20 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
                 log(f"[OneShotMV] crowd dress skipped ({e})")
         p["cast_order"], p["crowd"] = (cast_order or "as written"), pk["casting"]["crowd_mode"]
         cast = casting.cast_voice(pk, p["performers"], seed, sizes, fmt=fmt, leads=leads, phases=phases)
+        s1, s2 = formats.portrait_size(fmt)
         if refs:
             os.makedirs(os.path.join(run_dir, "refs"), exist_ok=True)
             for i, r in enumerate(refs):
                 head = os.path.join(run_dir, "refs", f"ref{i:02d}_head.png")
-                if faces.head_crop(r["path"], head):
-                    r["path"] = head
-                else:
-                    log(f"[OneShotMV] reference {r['name']}: no face found, so the whole photo is used "
-                        "and medium shots may keep its outfit")
+                if not faces.head_crop(r["path"], head, s2[0] / s2[1]):
+                    log(f"[OneShotMV] reference {r['name']}: no face found, so the headshot is made from the whole photo")
+                jobs.append((f"ref{i:02d}", graphs.artist_portrait(artist_path=head, prompt=_REF_SHEET, seed=seed + i,
+                                                                    prefix=f"{rel}/refs/ref{i:02d}_clean", size2=s2).nodes))
+                r["path"] = os.path.join(run_dir, "refs", f"ref{i:02d}_clean_00001_.png")
             _apply_references(cast, refs)
             p["references"] = [{"name": r["name"], "path": r["path"], "note": r.get("note", "")} for r in refs]
             log(f"[OneShotMV] reference characters: {len(refs)} photo(s), each re-staged by Qwen-Image 2.1, "
                 f"cycled across the singers: " + ", ".join(r["name"] for r in refs))
-        s1, s2 = formats.portrait_size(fmt)
         port = {}
         need_portrait = {r["performer"] for r in p["renders"] if r["role"] == "A" or editor == "qwen"}
         for c in cast:

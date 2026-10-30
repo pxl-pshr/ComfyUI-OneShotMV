@@ -161,9 +161,9 @@ Some things that help:
   cast in that order and reused across the singers. The World line still sets the clothes, the
   places and the light. Pose-matched looks turn off, so a look edit does not recast the face.
   Cutaways use the same photos in the World's clothes and places. Each photo is cropped to the
-  head and re-staged by Qwen-Image 2.1, the artist pack's identity edit, so the face, hair and
-  glasses follow the photo and the outfit comes from the World. Jewellery or a hand at the face
-  is in the crop and can carry over; a plain head-and-shoulders photo works best.
+  head and made into a plain studio headshot first (no hands, props or jewellery, saved in the
+  run's `refs` folder); every portrait is a Qwen-Image 2.1 identity edit of that headshot, so
+  the face, hair and glasses follow the photo and the outfit comes from the World.
 
 ## Settings
 

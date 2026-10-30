@@ -102,21 +102,26 @@ def _posed_face(rgb):
     return [float((x + bw / 2) / gw), float((y + bh / 2) / gh), float(bw / gw)]
 
 
-def head_crop(src: str, dst: str) -> bool:
-    """The head and hair of the photo's largest face, saved to dst. An identity edit of the whole
-    photo keeps its outfit, props and pose in every medium shot; from the head alone it dresses
-    the person as asked. False (nothing written) when no face is found."""
+def head_crop(src: str, dst: str, aspect: float) -> bool:
+    """The head and hair of the photo's largest face (the whole photo when no face is found), on a
+    mid-grey canvas of the frame's aspect (width / height), saved to dst. An identity edit of the
+    whole photo keeps its outfit, props and pose in every medium shot, and Qwen-Image 2.1 makes
+    its picture the shape of its first image. Returns whether a face was found."""
     from PIL import Image
     im = Image.open(src).convert("RGB")
     rgb = np.asarray(im)
     f = detect(rgb) or _posed_face(rgb)
-    if f is None:
-        return False
-    W, H = im.size
-    cx, cy, fw = f[0] * W, f[1] * H, f[2] * W
-    box = (max(0, cx - 1.3 * fw), max(0, cy - 1.4 * fw), min(W, cx + 1.3 * fw), min(H, cy + 1.1 * fw))
-    im.crop(tuple(round(v) for v in box)).save(dst)
-    return True
+    if f is not None:
+        W, H = im.size
+        cx, cy, fw = f[0] * W, f[1] * H, f[2] * W
+        box = (max(0, cx - 1.3 * fw), max(0, cy - 1.4 * fw), min(W, cx + 1.3 * fw), min(H, cy + 1.1 * fw))
+        im = im.crop(tuple(round(v) for v in box))
+    w, h = im.size
+    cw, ch = max(w, round(h * aspect)), max(h, round(w / aspect))
+    canvas = Image.new("RGB", (cw, ch), (128, 128, 128))
+    canvas.paste(im, ((cw - w) // 2, ch - h))
+    canvas.save(dst)
+    return f is not None
 
 
 def track(path: str, every: int = 3, size: int = 320) -> dict | None:
