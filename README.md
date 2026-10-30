@@ -47,8 +47,9 @@ ComfyUI's top bar. ComfyUI serves the page itself, so there is nothing else to i
 
 1. **The Brief.** Name the project, then drop in a song. The waveform shows the low, medium and
    high energy sections and the stretch the video will use; click it to start somewhere else.
-   Pick a length, a World (four examples, or write your own) and a format. The buttons say how
-   long the plan and the video will take.
+   Pick a length, a World (four examples, or write your own) and a format. Under the World line
+   you can add photos of the people who should appear. The buttons say how long the plan and
+   the video will take.
 2. **The Plan.** The World the tool wrote and every shot (when, what energy, who, wearing what,
    where), before anything long renders. Change the World and plan again, or make the video.
 3. **Rendering.** The stages (plan, stills, vision check, clips, take check, b-roll, edit), a
@@ -154,7 +155,14 @@ Some things that help:
 - Say whether it's night or day ("at 3 a.m.", "hard midday sun"), and the light follows.
 - For events such as a stadium, a ball or a club, people appear behind the singers, dressed for
   the World. The crowd setting turns this on or off.
-- Leave out real people and brands. Brand names are replaced, and signs are kept free of writing.
+- Leave brand names out of the World line. They are replaced, and signs are kept free of writing.
+- To use real people, add their photos under the World line (or pass `reference_characters` on
+  the Director: a JSON list of `{"name", "path"}`, paths in ComfyUI's input folder). They are
+  cast in that order and reused across the singers. The World line still sets the clothes, the
+  places and the light. Pose-matched looks turn off, so a look edit does not recast the face.
+  Cutaways can still be other people from the World; set cutaways to none if every shot should
+  be these people. The photo is restaged by Krea 2. On the 24 GB models the face is close to
+  the photo, not exact.
 
 ## Settings
 

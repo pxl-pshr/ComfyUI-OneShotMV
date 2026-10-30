@@ -187,12 +187,16 @@ def _save_video(g, images, fps, prefix, audio=None):
 
 
 # ------------------------------------------------------------------ Krea 2 W5
-def krea2_portrait(*, prompt, seed, prefix, size1, size2, denoise=0.25, turbo_only=False):
+def krea2_portrait(*, prompt, seed, prefix, size1, size2, denoise=0.25, turbo_only=False, ref_path=""):
     """Krea 2 W5 hybrid (Turbo composes, RAW + Turbo LoRA redetails). turbo_only=True uses the
     Turbo model for both passes: one model to load instead of two (the fast preset).
     denoise: how hard the RAW pass redetails the upscaled image; 0.40 looks too gritty, so 0.25
     keeps Turbo's cleaner composition and adds less texture. A set that names the same file for
-    Turbo and RAW also runs Turbo for both passes (the Turbo LoRA is only for the RAW model)."""
+    Turbo and RAW also runs Turbo for both passes (the Turbo LoRA is only for the RAW model).
+    ref_path: a photo of a real person. Text Encode Qwen Image Edit Plus feeds it to the Qwen3-VL
+    encoder as Picture 1. The basic Edit node is the wrong one here: Krea 2 strips the system
+    prefix and that node's image template has no system turn, so the photo would be cut off.
+    Krea's sampler ignores reference latents; the vision tokens are what carry the face."""
     g = Graph()
     turbo = g.add("UNETLoader", unet_name=M["krea_turbo"], weight_dtype="default")
     if turbo_only or M["krea_raw"] == M["krea_turbo"]:
@@ -202,7 +206,11 @@ def krea2_portrait(*, prompt, seed, prefix, size1, size2, denoise=0.25, turbo_on
         lora = g.add("LoraLoaderModelOnly", model=O(raw), lora_name=M["krea_turbo_lora"], strength_model=0.6)
     clip = g.add("CLIPLoader", clip_name=M["krea_te"], type="krea2", device="default")
     vae = g.add("VAELoader", vae_name=M["krea_vae"])
-    pos = g.add("CLIPTextEncode", clip=O(clip), text=prompt)
+    if ref_path:
+        ref = g.add("FVLoadImagePath", path=ref_path)
+        pos = g.add("TextEncodeQwenImageEditPlus", clip=O(clip), prompt=prompt, vae=O(vae), image1=O(ref))
+    else:
+        pos = g.add("CLIPTextEncode", clip=O(clip), text=prompt)
     neg = g.add("ConditioningZeroOut", conditioning=O(pos))
     lat = g.add("EmptyLatentImage", width=size1[0], height=size1[1], batch_size=1)
     ks = g.add("KSampler", model=O(turbo), seed=seed, steps=8, cfg=1.0, sampler_name="euler",

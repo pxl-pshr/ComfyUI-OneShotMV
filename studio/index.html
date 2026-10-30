@@ -85,6 +85,11 @@ h1{margin:0;font-size:40px;line-height:1.05;font-weight:800;font-stretch:112%;le
 textarea,select,input[type=number],input[type=text]{width:100%;padding:12px 14px;border-radius:12px;background:var(--bg);border:1px solid var(--line2);color:var(--text);font:inherit}
 textarea{font-size:16px;line-height:1.4;resize:vertical;min-height:84px}
 #world{height:150px;min-height:110px;overflow-y:auto}
+.refs{display:flex;flex-direction:column;gap:10px;margin-top:14px}
+.ref{display:flex;align-items:center;gap:10px}
+.ref img{width:56px;height:56px;object-fit:cover;border-radius:8px;background:var(--panel2);flex:0 0 auto}
+.ref input{flex:1 1 auto;width:auto;min-width:0;padding:8px 12px}
+.ref .btn{flex:0 0 auto}
 textarea:focus,select:focus,input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%;background-size:5px 5px;background-repeat:no-repeat;padding-right:34px}
@@ -519,7 +524,7 @@ const WORLDS = [
 const CUTS = ["every 2 bars","every bar","to the music (subtle)","to the music (intense)"];
 const LEVEL_COL = {low:"var(--low)", medium:"var(--mid)", high:"var(--high)"};
 const DEFAULT_BRIEF = {name:"", song:"", theme:"", world:"custom", seconds:30, start:-1, format:"16:9", preset:"quality", fx:"subtle",
-  cuts_low:"every 2 bars", cuts_medium:"every bar", cuts_high:"to the music (subtle)", crowd:"auto", cast_order:"as written", seed:1, broll:0.125, qc:2, models:"auto"};
+  cuts_low:"every 2 bars", cuts_medium:"every bar", cuts_high:"to the music (subtle)", crowd:"auto", cast_order:"as written", seed:1, broll:0.125, qc:2, models:"auto", characters:[]};
 
 // ---------------------------------------------------------------- state
 const store = {
@@ -771,7 +776,14 @@ async function viewBrief(){
       <div class="tiles" role="group" aria-label="World examples" id="tiles"></div>
       <label for="world" style="display:block;margin:16px 0 8px;font-size:13px;color:var(--muted)">Describe the world in a line: who they are, what they wear, where they are, the light</label>
       <textarea id="world" rows="6" placeholder="Like “the gladiator games in ancient Rome”. For more control: the people in the order you want them; the places; the light."></textarea>
-      <p class="note">One line is enough. The characters you name are cast first, in the order you name them, and every shot is a different invented person.</p>
+      <p class="note" id="worldnote"></p>
+      <div id="refs"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn sm" id="addref" type="button">+ Add a character</button>
+        <span class="tiny" id="refcount"></span>
+      </div>
+      <input id="reffile" type="file" accept="image/png,image/jpeg,image/webp,image/*" multiple hidden>
+      <p class="note" id="refnote"></p>
     </section>
    </div>
 
@@ -807,7 +819,7 @@ async function viewBrief(){
       <p class="center muted" style="margin:0;font-size:13px" id="eta-why">See the World the tool writes and every shot before the long render.</p>
       <button class="btn two" id="go-render" type="button"><span class="lbl">Skip the preview, make the video</span><span class="eta-b" id="eta-all"></span></button>
     </section>
-    <p class="tiny" style="margin:0 4px">Use music you have the rights to. Every face is invented.</p>
+    <p class="tiny" id="facenote" style="margin:0 4px"></p>
    </aside>
   </div>`;
 
@@ -877,6 +889,7 @@ async function viewBrief(){
     $("#fxs").querySelectorAll(".opt").forEach(el => el.onclick = () => { b.fx = el.dataset.x; saveBrief(); drawFx(); });
   };
   drawFx();
+  drawRefs();
 
   // how long the preview takes (on the buttons), refreshed when the brief changes
   ta.addEventListener("input", refreshEstimate);
@@ -996,6 +1009,65 @@ function refreshEstimate(){
   }, 500);
 }
 
+function refsOf(b){ if (!Array.isArray(b.characters)) b.characters = []; return b.characters; }
+function refView(file){
+  const s = String(file || ""), i = s.lastIndexOf("/");
+  const sub = i >= 0 ? s.slice(0, i) : "", name = i >= 0 ? s.slice(i + 1) : s;
+  return "/view?filename=" + encodeURIComponent(name) + "&type=input&subfolder=" + encodeURIComponent(sub);
+}
+function drawRefCopy(){
+  const n = refsOf(S.brief).length, world = $("#worldnote"), note = $("#refnote"), face = $("#facenote");
+  if (world) world.textContent = n
+    ? "The World line still sets the clothes, the places and the light. The photos below are the faces."
+    : "One line is enough. The characters you name are cast first, in the order you name them, and every shot is a different invented person.";
+  if (note) note.textContent = n
+    ? "Cast in this order and reused across the singers. Cutaways can still be other people from the World. Set cutaways to none if every shot should be these people. On the 24 GB models the face is close to the photo, not exact."
+    : "Add photos of the people who should be in the video. They are cast in this order and reused. Leave this empty for an invented cast.";
+  if (face) face.textContent = n
+    ? "Use music you have the rights to. These photos are the people in the video."
+    : "Use music you have the rights to. Every face is invented.";
+}
+function drawRefs(){
+  const chars = refsOf(S.brief), box = $("#refs");
+  if (!box) return;
+  box.innerHTML = chars.map((c, i) => `<div class="ref"><img src="${esc(refView(c.file || c.path))}" alt=""><input type="text" maxlength="80" data-i="${i}" value="${esc(c.name || "")}" aria-label="Name of reference character ${i + 1}" placeholder="Name"><button type="button" class="btn sm" data-x="${i}">Remove</button></div>`).join("");
+  box.querySelectorAll("input").forEach(el => el.oninput = () => { chars[+el.dataset.i].name = el.value; saveBrief(); drawRefCopy(); });
+  box.querySelectorAll("[data-x]").forEach(el => el.onclick = () => { chars.splice(+el.dataset.x, 1); saveBrief(); drawRefs(); });
+  const count = $("#refcount"), add = $("#addref"), file = $("#reffile");
+  if (count) count.textContent = chars.length ? chars.length + " of 12" : "";
+  if (add) add.disabled = chars.length >= 12;
+  if (add && file) add.onclick = () => { if (refsOf(S.brief).length >= 12){ toast("Twelve reference characters is the limit."); return; } file.click(); };
+  if (file && !file._wired){
+    file._wired = true;
+    file.onchange = async () => {
+      const files = [...file.files];
+      file.value = "";
+      if (files.length) toast(files.length > 1 ? "Uploading " + files.length + " photos…" : "Uploading " + files[0].name + "…");
+      try{
+        for (const f of files){
+          if (refsOf(S.brief).length >= 12){ toast("Twelve reference characters is the limit."); break; }
+          await uploadRef(f);
+        }
+      }catch(e){ toast("Upload failed: " + e.message); }
+      drawRefs();
+    };
+  }
+  drawRefCopy();
+}
+async function uploadRef(file){
+  const fd = new FormData();
+  fd.append("image", file, file.name);
+  fd.append("type", "input");
+  fd.append("overwrite", "false");
+  const r = await fetch("/api/upload/image", {method:"POST", body: fd});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const j = await r.json();
+  const saved = (j.subfolder ? j.subfolder + "/" : "") + j.name;
+  const base = String(file.name || "").replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+  const chars = refsOf(S.brief);
+  chars.push({name: base.slice(0, 40) || ("Reference " + (chars.length + 1)), file: saved});
+  saveBrief();
+}
 async function upload(file){
   overlay("Uploading the song", file.name);
   try{
@@ -1066,10 +1138,10 @@ async function viewPlan(run){
      ${w.camera ? `<div><div class="kv">Camera</div><div style="font-size:14px;color:#D4D4D4">${esc(w.camera)}</div></div>` : ""}
      ${w.places && w.places.length ? `<div><div class="kv">Places</div><div style="font-size:14px;color:#D4D4D4">${esc(w.places.slice(0,6).map(p=>String(p).replace(/^(in|on|at|near|by) (the )?/i,"")).join(" · "))}${w.places.length > 6 ? " · …" : ""}</div></div>` : ""}
      ${w.light && w.light.length ? `<div><div class="kv">Light</div><div style="font-size:14px;color:#D4D4D4">${esc(w.light.slice(0,4).join(" · "))}</div></div>` : ""}
-     <div><div class="kv">Cast</div><div style="font-size:14px;color:#D4D4D4">${w.characters} characters in the World${w.left_out.length ? `; not in this cut: ${esc(w.left_out.slice(0,10).join(", "))}${w.left_out.length > 10 ? "…" : ""}` : ""}.</div></div>
+     <div><div class="kv">Cast</div><div style="font-size:14px;color:#D4D4D4">${(w.references||[]).length ? `Reference photos, in order: ${esc(w.references.join(", "))}.` : `${w.characters} characters in the World.`}${(w.left_out||[]).length ? ` Not in this cut: ${esc(w.left_out.slice(0,10).join(", "))}${w.left_out.length > 10 ? "…" : ""}.` : ""}</div></div>
      <div><div class="kv">Energy</div><div class="emap" aria-hidden="true">${levels}</div>
        <ul class="tiny" style="margin:8px 0 0;padding-left:16px">${(r.energy_map||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
-     <p class="tiny" style="margin:0">To change who is in it, edit the World line: the characters it names are cast first, in that order. Same seed, same cast; a new seed re-casts.</p>
+     <p class="tiny" style="margin:0">${(w.references||[]).length ? "The photos are the faces, cast in that order and reused. The World line still sets the clothes, the places and the light. Cutaways can still be other people from the World." : "To change who is in it, edit the World line: the characters it names are cast first, in that order. Same seed, same cast; a new seed re-casts."}</p>
    </section>
    <section class="card" style="flex:999 1 720px;min-width:0" aria-labelledby="sh">
      <div class="row" style="margin-bottom:10px"><h2 class="label" id="sh">Every shot</h2><span class="tiny">${sing} sung, ${cut} cutaway${cut===1?"":"s"}</span></div>

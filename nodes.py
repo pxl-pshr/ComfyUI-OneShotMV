@@ -292,6 +292,16 @@ class FVDirector:
                        "tooltip": "Which model files to use. 24gb: the fp8 set (models.json), made for 24 GB GPUs. "
                                   "full: the bf16 set (models_full.json), for 48 GB or more. auto: the full set on "
                                   "a 48 GB+ GPU when its files are installed, otherwise the 24 GB set."}),
+            "reference_characters": ("STRING", {"default": "", "multiline": True,
+                                     "tooltip": "Photos of the people who should appear, as a JSON list: "
+                                                "[{\"name\": \"Ada\", \"path\": \"ada.png\", \"note\": \"\"}]. "
+                                                "A path is a file in ComfyUI's input folder, or a full path. "
+                                                "They are cast in this order and reused across the singers. "
+                                                "The World line still sets the clothes, the places and the light. "
+                                                "Empty uses an invented cast, unless the Studio just wrote "
+                                                "input/oneshot-mv/references.json. With photos, Twins on auto "
+                                                "turns pose-matched looks off so a look edit does not recast the face. "
+                                                "Cutaways can still be other people from the World."}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING")
@@ -308,7 +318,7 @@ class FVDirector:
             dance_video_path="", run_name="", twin_editor="klein", guide_strength=1.0, queue_assemble=True,
             framing="mixed", artist_image_path="", qc_retries=2, artist_image=None, dance_video=None, theme="", broll_share=0.125, broll_style="mix",
             staged=True, look_groups=False, cuts_low=None, cuts_medium=None, cuts_high=None, audio_fx="subtle",
-            cast_order="as written", crowd="auto", models="auto"):
+            cast_order="as written", crowd="auto", models="auto", reference_characters=""):
         _reload()
         if artist_image is not None:
             artist_image_path = _save_image_input(artist_image)
@@ -326,7 +336,8 @@ class FVDirector:
                               look_groups=look_groups,
                               cuts={"low": cuts_low, "medium": cuts_medium, "high": cuts_high},
                               audio_fx=audio_fx or "", cast_order=cast_order or "as written",
-                              crowd=crowd or "auto", models=models or "auto")
+                              crowd=crowd or "auto", models=models or "auto",
+                              references=reference_characters or "")
         ui = {"text": [res["summary"]]}
         ui["text"].append(_file_ref(res["bundle"]))  # jobs.json as a job output (SDK clients)
         return {"ui": ui, "result": (res["summary"], res["run_dir"])}

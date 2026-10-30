@@ -7,8 +7,10 @@ API (all JSON):
   GET  api/songs             audio files in ComfyUI's input folder
   GET  api/analyze?song=&seconds=&start=
                              duration, tempo, energy sections, a waveform, the part the run will use
-  POST api/start             {song, theme, seconds, start, format, preset, fx, cuts_*, seed, render}
-                             queues a Director job; returns its prompt id
+  POST api/start             {song, theme, seconds, start, format, preset, fx, cuts_*, seed, render,
+                             characters: [{name, file}]}
+                             queues a Director job; returns its prompt id.
+                             characters are reference photos already uploaded to the input folder.
   GET  api/job/<prompt id>   queued / running / done (with the run it made) / error
   GET  api/run/<run>         the plan, the World, every shot with its still, clip and state,
                              the stage, the notes from the vision check and take QC, the video
@@ -371,11 +373,40 @@ def _director_has(name: str) -> bool:
         return False
 
 
+def _brief_references(b: dict) -> list[dict]:
+    """The brief's reference photos, capped at 12. `file` is what the page stores after upload."""
+    raw = b.get("characters") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for it in raw:
+        if isinstance(it, str):
+            it = {"path": it}
+        if not isinstance(it, dict):
+            continue
+        src = str(it.get("path") or it.get("file") or "").strip()
+        if not src:
+            continue
+        name = re.sub(r"\s+", " ", str(it.get("name") or "").strip())[:80] or f"Reference {len(out) + 1}"
+        note = re.sub(r"\s+", " ", str(it.get("note") or "").strip())[:240]
+        out.append({"name": name, "path": src, "note": note})
+        if len(out) >= 12:
+            break
+    return out
+
+
 def _director_graph(b: dict) -> dict:
     cuts = {k: b.get(k) for k in ("cuts_low", "cuts_medium", "cuts_high") if b.get(k)}
+    refs = _brief_references(b)
     d = {"audio": ["1", 0], "mode": "voice", "pack": "crowd", "format": b.get("format", "16:9"),
          "preset": b.get("preset", "quality"), "seconds": float(b.get("seconds", 30)),
-         "start": float(b.get("start", -1)), "seed": int(b.get("seed", 1)), "twins": "auto",
+         "start": float(b.get("start", -1)), "seed": int(b.get("seed", 1)),
+         "twins": "off" if refs else "auto",
          "queue_renders": bool(b.get("render", False)), "theme": (b.get("theme") or "").strip(),
          "run_name": b.get("run_name", ""), "queue_assemble": True, "framing": "mixed",
          "broll_share": float(b.get("broll", 0.125)), "broll_style": "mix", "qc_retries": int(b.get("qc", 2)),
@@ -383,6 +414,9 @@ def _director_graph(b: dict) -> dict:
          "crowd": b.get("crowd", "auto"), **cuts}
     if b.get("models") in ("auto", "24gb", "full") and _director_has("models"):
         d["models"] = b["models"]
+    # The input exists only after a restart. Until then the reloaded Director reads the sidecar.
+    if refs and _director_has("reference_characters"):
+        d["reference_characters"] = json.dumps(refs, ensure_ascii=False)
     return {"1": {"class_type": "LoadAudio", "inputs": {"audio": b["song"]}},
             "2": {"class_type": "FVDirector", "inputs": d}}
 
@@ -629,9 +663,11 @@ def _run(name: str) -> dict:
     latest = _newest([x for x in glob.glob(os.path.join(d, "r*.mp4"))])
     chars = th.get("characters") or []
     left = [str(ch.get("role") or str(ch.get("who", "")).split(",")[0]) for i, ch in enumerate(chars) if i not in used]
+    ref_names = [str(r.get("name") or "").strip() for r in (p.get("references") or [])]
     world = {"line": th.get("theme", ""), "headline": (th.get("theme", "").split(":")[0].split(",")[0]).strip(),
              "camera": th.get("camera", ""), "places": th.get("places") or [], "light": th.get("light") or [],
-             "grade": th.get("grade") or {}, "characters": len(chars), "left_out": left[:30]}
+             "grade": th.get("grade") or {}, "characters": len(chars), "left_out": left[:30],
+             "references": [r for r in ref_names if r]}
     return {
         "run": os.path.basename(d), "project": _project(d), "stage": stage, "stages": stages, "pct": pct,
         "elapsed_min": round(elapsed, 1), "estimate_min": round(est), "left_min": 0 if done else round(max(0.0, est - elapsed)),
@@ -1243,6 +1279,9 @@ async def _api(request: web.Request, route: str) -> web.Response:
             if project and not body.get("run_name"):
                 slug = re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")[:40] or "video"
                 body["run_name"] = f"{slug}-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}"
+            # Written before the graph is queued. The Director reads it on the run, including
+            # when this ComfyUI has not been restarted since reference_characters was added.
+            await _blocking(_fv("director").store_references, _brief_references(body))
             pid = await _blocking(_queue_graph, _director_graph(body))
             import time
             with open(os.path.join(_jobs_dir(), re.sub(r"[^0-9a-f-]", "", pid) + ".json"), "w", encoding="utf-8") as f:

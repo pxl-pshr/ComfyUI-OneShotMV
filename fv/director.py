@@ -10,6 +10,7 @@ import datetime as _dt
 import json
 import os
 import re
+import time
 import urllib.request
 
 import numpy as np
@@ -66,6 +67,205 @@ def clip_info(path: str) -> tuple[int, float]:
     return n, fps
 
 
+# Reference people: photos the Studio (or the Director's reference_characters input) names.
+# The file lets the Studio work before ComfyUI is restarted, because a new node input stays
+# hidden until then, while this module is reloaded on every run.
+_REF_CAP = 12
+_REF_TTL = 30 * 60
+_ENCODE_TEXT = {"CLIPTextEncode": "text", "TextEncodeQwenImageEdit": "prompt",
+                "TextEncodeQwenImageEditPlus": "prompt"}
+
+
+def _search_dirs() -> list[str]:
+    dirs = []
+    try:
+        import folder_paths
+        dirs.append(folder_paths.get_input_directory())
+        dirs.append(folder_paths.get_output_directory())
+    except Exception:
+        pass
+    extra = os.environ.get("FV_INPUT_DIR", "")
+    if extra:
+        dirs.append(extra)
+    return [d for d in dirs if d]
+
+
+def references_file() -> str | None:
+    """input/oneshot-mv/references.json, or None when there is no input folder."""
+    base = ""
+    try:
+        import folder_paths
+        base = folder_paths.get_input_directory()
+    except Exception:
+        base = os.environ.get("FV_INPUT_DIR", "")
+    if not base:
+        return None
+    d = os.path.join(base, "oneshot-mv")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "references.json")
+
+
+def _resolve_ref_path(path: str) -> str:
+    path = (path or "").strip().strip('"').strip("'")
+    if not path or path.lower().startswith(("http://", "https://")):
+        return ""
+    if os.path.isabs(path):
+        return path if os.path.isfile(path) else ""
+    parts = path.replace("\\", "/").split("/")
+    if ".." in parts:
+        return ""
+    for base in _search_dirs():
+        got = os.path.normpath(os.path.join(base, *parts))
+        if os.path.isfile(got):
+            return got
+    return ""
+
+
+def parse_references(raw, log=None) -> list[dict]:
+    """Photos of real people. Accepts a JSON list or object, a list, one path, or a sidecar
+    {"at", "characters"}. Missing files are skipped. At most 12. Names default to "Reference N"."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        if raw[0] not in "[{":
+            path = _resolve_ref_path(raw)
+            return [{"name": "Reference 1", "path": path, "note": ""}] if path else []
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            path = _resolve_ref_path(raw)
+            return [{"name": "Reference 1", "path": path, "note": ""}] if path else []
+    if isinstance(raw, dict):
+        if "characters" in raw or "refs" in raw:
+            items = raw.get("characters") if raw.get("characters") is not None else raw.get("refs")
+        elif raw.get("path") or raw.get("file"):
+            items = [raw]
+        else:
+            items = []
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        return []
+    out, missing = [], []
+    for it in items or []:
+        if isinstance(it, str):
+            it = {"path": it}
+        if not isinstance(it, dict):
+            continue
+        src = str(it.get("path") or it.get("file") or it.get("image") or "").strip()
+        path = _resolve_ref_path(src)
+        if not path:
+            if src:
+                missing.append(src)
+            continue
+        name = re.sub(r"\s+", " ", str(it.get("name") or "").strip())[:80] or f"Reference {len(out) + 1}"
+        note = re.sub(r"\s+", " ", str(it.get("note") or "").strip())[:240]
+        out.append({"name": name, "path": path, "note": note})
+        if len(out) >= _REF_CAP:
+            break
+    if log and missing:
+        log("[OneShotMV] reference characters skipped (file not found): " + ", ".join(missing[:8]))
+    return out
+
+
+def store_references(refs) -> str:
+    """Write the Studio's list. An empty list clears a previous one. Paths stay as given
+    (input-folder names); they are resolved when the run starts."""
+    path = references_file()
+    if not path:
+        raise RuntimeError("ComfyUI's input folder is not available, so reference characters cannot be saved")
+    clean = []
+    for it in refs or []:
+        if isinstance(it, str):
+            it = {"path": it}
+        if not isinstance(it, dict):
+            continue
+        src = str(it.get("path") or it.get("file") or "").strip()
+        if not src:
+            continue
+        name = re.sub(r"\s+", " ", str(it.get("name") or "").strip())[:80] or f"Reference {len(clean) + 1}"
+        note = re.sub(r"\s+", " ", str(it.get("note") or "").strip())[:240]
+        clean.append({"name": name, "path": src, "note": note})
+        if len(clean) >= _REF_CAP:
+            break
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"at": time.time(), "characters": clean}, f)
+    return path
+
+
+def take_references() -> list[dict]:
+    """Read the sidecar and delete it, so a later graph-only run does not inherit the Studio's list.
+    A file older than 30 minutes is discarded."""
+    path = references_file()
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        raw = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    if isinstance(raw, dict) and isinstance(raw.get("at"), (int, float)):
+        if time.time() - float(raw["at"]) > _REF_TTL:
+            return []
+    return parse_references(raw)
+
+
+def _run_references(references, log=print) -> list[dict]:
+    """A non-empty reference_characters argument wins. None or a blank string reads the sidecar.
+    The sidecar is always consumed."""
+    file_refs = take_references()
+    blank = references is None or (isinstance(references, str) and not references.strip())
+    if blank:
+        return file_refs
+    return parse_references(references, log=log)
+
+
+def _reference_portrait(name: str, note: str, portrait: str) -> str:
+    note = re.sub(r"\s+", " ", (note or "").strip()).strip(".")
+    note_bit = f" {note}." if note else ""
+    text = (f"The person in Picture 1 is {name}. Keep their exact face, age, bone structure, "
+            f"skin tone and hair.{note_bit} Make a new photograph of that same person: {portrait}")
+    return " ".join(text.split())
+
+
+def _apply_references(cast: list[dict], refs: list[dict]) -> None:
+    """Each performer takes the next photo, then the list repeats. The World still wrote the
+    clothes, the place and the light; the photo replaces the invented face. Gender and age are
+    cleared so the vision check does not reject the photo for the World role's gender, and
+    eyewear is allowed so glasses in the photo are not a fault."""
+    for c in cast:
+        ref = refs[int(c["id"]) % len(refs)]
+        name = ref["name"]
+        c["portrait"] = _reference_portrait(name, ref.get("note", ""), c.get("portrait") or "")
+        c["ref_path"] = ref["path"]
+        c["ref_name"] = name
+        c["who"] = name
+        twin = dict(c.get("twin") or {})
+        twin["who"] = name
+        c["twin"] = twin
+        ck = dict(c.get("check") or {})
+        ck["role"] = name
+        ck["gender"] = ""
+        ck["age"] = ""
+        ck["eyewear"] = True
+        ck["look"] = "the same face as in their reference photo"
+        c["check"] = ck
+
+
+def _labelled(role: str, gender="", age="") -> str:
+    bits = [str(x) for x in (gender, age) if str(x).strip()]
+    role = str(role or "").strip()
+    if role and bits:
+        return f"{role} ({', '.join(bits)})"
+    return role
+
+
 def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pack: str = "crowd",
            fmt: str = "16:9", preset: str = "quality", seconds: float = 30.0, start: float = -1.0,
            seed: int = 1, twins: str = "auto", dance_path: str = "", run_name: str = "",
@@ -75,8 +275,10 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
            broll_style: str = "mix", staged: bool = True,
            look_groups: bool = False, cuts: dict | None = None, audio_fx: str = "",
            cast_order: str = "as written", crowd: str = "auto", log=print,
-           lip_repair: bool = False, models: str = "auto") -> dict:  # lip_repair: accepted and ignored, so older callers
-    # (an old nodes.py still loaded in a ComfyUI that has not restarted) still work
+           lip_repair: bool = False, models: str = "auto", references=None) -> dict:
+    # lip_repair is accepted and ignored, and references defaults to None, so an older nodes.py
+    # still loaded in a ComfyUI that has not restarted still works. A blank references reads
+    # input/oneshot-mv/references.json, which the Studio writes.
     """staged (voice runs queued here, with QC): the 4-load order. Krea makes every portrait and
     the b-roll candidate stills; LTX makes every singer clip and the b-roll clips, and QC
     re-rolls the singer shots while LTX stays loaded; then Klein makes every look keyframe from
@@ -133,9 +335,15 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
         log("[OneShotMV] " + themes.summary(bible).replace("\n", "\n[OneShotMV] "))
     if cuts:  # the chosen cut per energy level (low / medium / high), over the pack's defaults
         pk["edit"] = dict(pk["edit"], **{f"cut_{lv}": m for lv, m in cuts.items() if m})
+    refs = _run_references(references, log)
     if mode == "voice":
         if pk["casting"].get("artist") and not (artist_path and os.path.exists(artist_path)):
             raise ValueError("the artist pack needs artist_image_path (one photo of the artist)")
+        if refs and twins == "auto":
+            twins = "off"
+            log("[OneShotMV] reference characters: pose-matched looks are off, so a look edit does not recast the face")
+        elif refs and twins in ("loud", "all"):
+            log("[OneShotMV] reference characters: pose-matched looks are on, so a look edit may change the face")
         p = planner.plan_voice(tl, pk, fmt=fmt, preset=preset, seconds=seconds, start=start, seed=seed,
                                twins=None if twins == "auto" else twins, framing=framing)
         p["artist_path"] = artist_path
@@ -154,6 +362,8 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
                 pk["finish"] = themes.finish_for(bible, pk.get("finish", {}))
             p["unique_cast"] = True
     else:
+        if refs:
+            log("[OneShotMV] reference characters are used in voice mode; this motion run keeps the pack's cast")
         if not dance_path or not os.path.exists(dance_path):
             raise ValueError("motion mode needs a dance clip (dance_video_path)")
         n, cfps = clip_info(dance_path)
@@ -210,6 +420,11 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
                 log(f"[OneShotMV] crowd dress skipped ({e})")
         p["cast_order"], p["crowd"] = (cast_order or "as written"), pk["casting"]["crowd_mode"]
         cast = casting.cast_voice(pk, p["performers"], seed, sizes, fmt=fmt, leads=leads, phases=phases)
+        if refs:
+            _apply_references(cast, refs)
+            p["references"] = [{"name": r["name"], "path": r["path"], "note": r.get("note", "")} for r in refs]
+            log(f"[OneShotMV] reference characters: {len(refs)} photo(s), cycled across the singers: "
+                + ", ".join(r["name"] for r in refs))
         s1, s2 = formats.portrait_size(fmt)
         port = {}
         need_portrait = {r["performer"] for r in p["renders"] if r["role"] == "A" or editor == "qwen"}
@@ -217,7 +432,12 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
             if c["id"] not in need_portrait:
                 continue
             name = f"p{c['id']:03d}"
-            if c.get("artist_edit"):
+            if c.get("ref_path"):
+                jobs.append((name, graphs.krea2_portrait(prompt=c["portrait"], seed=c["seed"],
+                                                         prefix=f"{rel}/{name}", size1=s1, size2=s2,
+                                                         turbo_only=(label == "fast"),
+                                                         ref_path=c["ref_path"]).nodes))
+            elif c.get("artist_edit"):
                 jobs.append((name, graphs.artist_portrait(artist_path=artist_path, prompt=c["portrait"],
                                                           seed=c["seed"], prefix=f"{rel}/{name}", size2=s2).nodes))
             else:
@@ -460,6 +680,11 @@ def plan_preview(p: dict, queued: bool = True) -> str:
     if th.get("camera"):
         lines.append("Camera: " + th["camera"])
     lines.append(f"Cast order: {p.get('cast_order', 'as written')}   Crowd behind singers: {p.get('crowd', 'auto')}")
+    named = [str(r.get("name") or "").strip() for r in (p.get("references") or [])]
+    named = [r for r in named if r]
+    if named:
+        lines.append("Reference photos, cast in this order and reused: " + ", ".join(named) + ".")
+        lines.append("Cutaways can still be other people from the World.")
     lines.append("")
     used = set()
     for s in p.get("shots", []):
@@ -469,7 +694,7 @@ def plan_preview(p: dict, queued: bool = True) -> str:
         head = f"{s['index'] + 1:>3}  {_clock(s['t0'])}  {s['t1'] - s['t0']:4.1f}s  {s.get('energy', ''):<6} {s.get('size', ''):<6}"
         if br is not None and (br.get("broll") or {}).get("check"):
             ck = br["broll"]["check"]
-            who = f"b-roll: {ck.get('role', '')} ({ck.get('gender', '')}, {ck.get('age', '')})"
+            who = "b-roll: " + (_labelled(ck.get("role", ""), ck.get("gender", ""), ck.get("age", "")) or "cutaway")
             where = ck.get("place", "")
             wear = ck.get("wear", "")
         elif br is not None:
@@ -479,7 +704,7 @@ def plan_preview(p: dict, queued: bool = True) -> str:
             ck = c.get("check") or {}
             if c.get("char") is not None:
                 used.add(c["char"])
-            who = f"{ck.get('role') or c.get('who', '')} ({ck.get('gender', '')}, {ck.get('age', '')})" if ck else c.get("who", "")
+            who = _labelled(ck.get("role") or c.get("who", ""), ck.get("gender", ""), ck.get("age", "")) if ck else c.get("who", "")
             where, wear = ck.get("place", ""), ck.get("wear", "")
         else:
             who, where, wear = "?", "", ""
@@ -490,9 +715,13 @@ def plan_preview(p: dict, queued: bool = True) -> str:
         lines.append("")
         lines.append(f"In the World but not in this video ({len(left)}): " + ", ".join(left[:30]))
     lines.append("")
-    lines.append("To change it: edit the World line (theme). The characters it names are cast first, in the order "
-                 "it names them; say who leads, where and in what. The same seed keeps this cast; a new seed "
-                 "re-casts.")
+    if p.get("references"):
+        lines.append("The photos above are the faces. The World line still sets the clothes, the places and the light. "
+                     "Pose-matched looks stay off when Twins is auto, so a look edit does not recast the face.")
+    else:
+        lines.append("To change it: edit the World line (theme). The characters it names are cast first, in the order "
+                     "it names them; say who leads, where and in what. The same seed keeps this cast; a new seed "
+                     "re-casts.")
     return "\n".join(lines)
 
 
@@ -1297,15 +1526,16 @@ def critic_pass(run_dir: str, *, pass_idx: int = 0, max_passes: int = 2, queue: 
             crowded = sum(1 for tk in it["takes"] if "people" in (tk.get("faults") or [])) >= 2
             for node in g.values():
                 ins = node.get("inputs", {})
-                if node.get("class_type") == "CLIPTextEncode" and isinstance(ins.get("text"), str):
-                    t = ins["text"]
+                text_key = _ENCODE_TEXT.get(node.get("class_type"))
+                if text_key and isinstance(ins.get(text_key), str):
+                    t = ins[text_key]
                     if "mono" in it["takes"][-1]["faults"]:  # "muted" colour can go grey
                         t = re.sub(r"(?i)\bMuted, true-to-life colour\b", "Rich, natural, true-to-life colour", t)
                     if crowded:  # an emptied beach club, market or rave can still fill up
                         t = _wall_place(t)
                     elif people:  # a new seed alone keeps a dressing room's mirrors or an arena's crowd
                         t = _empty_place(t)
-                    ins["text"] = _insert_fix(t, fix)
+                    ins[text_key] = _insert_fix(t, fix)
                 if node.get("class_type") == "SaveImage":
                     ins["filename_prefix"] = f"{rel}/{tag}"
             json.dump(g, open(os.path.join(run_dir, "jobs", f"critic{pass_idx + 1}_{tag}.json"), "w",
