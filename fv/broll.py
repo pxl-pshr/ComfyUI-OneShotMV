@@ -170,9 +170,12 @@ def _dancer(p: dict, pack: dict, k: int) -> dict:
     refs = p.get("references") or []
     if not refs:
         return d
+    from .casting import _no_feet
     from .director import _clothes_only, _person_name
     ref = refs[k % len(refs)]
-    d.update(role=d["who"], who=_person_name(ref["name"]), wear=_clothes_only(d["wear"]) or d["wear"], ref_path=ref["path"])
+    wardrobe = p.get("ref_wardrobe") or [d["wear"]]
+    wear = _no_feet(wardrobe[k % len(wardrobe)])
+    d.update(role=d["who"], who=_person_name(ref["name"]), wear=_clothes_only(wear) or wear, ref_path=ref["path"])
     if d.get("check"):
         d["check"].update(role=ref["name"], gender="", age="", eyewear=True, wear=d["wear"],
                           look="the same face as in their reference photo")

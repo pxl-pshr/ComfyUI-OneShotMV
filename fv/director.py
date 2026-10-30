@@ -229,17 +229,17 @@ def _run_references(references, log=print) -> list[dict]:
 # A short given name has no digit and no underscore, so it is kept.
 # Hair, makeup and eyewear written into a World's outfit. The photo owns those.
 _IDENTITY_PHRASE = re.compile(
-    r"(?i)(?:\b(?:with|and)\b\s+)?(?:[\w'-]+\s+){0,6}?"
+    r"(?i)(?:\b(?:with|and)\b\s+)?(?:(?!(?:with|and)\b)[\w'-]+\s+){0,6}?"
     r"\b(?:hair|hairstyle|hairdo|ponytail|pigtails?|bangs|fringe|braids?|updo|scrunchie|"
     r"barrettes?|headband|wig|dreadlocks?|afro|mohawk|mullet|beard|moustache|mustache|goatee|"
-    r"stubble|makeup|lipstick|eyeshadow|eyeliner|mascara|blush|rhinestones?|eyelashes|glasses|"
-    r"sunglasses|eyewear)\b")
+    r"stubble|makeup|lipstick|eyeshadow|eyeliner|mascara|blush|eyelashes|glasses|"
+    r"sunglasses|eyewear)\b(?:\s+(?:holders?|clips?|ties?|bands?|pins?))?")
 # The photo, cropped to the head, re-made as a plain studio headshot once per run: every portrait
 # is an edit of it, so a hand at the face, jewellery or a prop in the photo is not copied into them.
 _REF_SHEET = ("Photo of the same person as in image 1: a plain studio portrait, head and shoulders, facing the "
               "camera, mouth closed, both arms down at their sides and both hands out of the frame, nothing "
               "touching the face. Keep their exact face, age, bone structure, skin tone, hair, beard, makeup and "
-              "glasses. A plain grey crew-neck t-shirt, no jewellery, no gloves, no props. Plain mid-grey studio "
+              "glasses. A plain black crew-neck top, no hair accessories, no jewellery, no gloves, no props. Plain mid-grey studio "
               "backdrop filling the whole frame, soft even light.")
 _REF_FRAME = {
     "close": ("Head-and-shoulders portrait, standing upright, singing straight into the lens "
@@ -321,23 +321,29 @@ def _reference_portrait(name: str, note: str, portrait: str, *, wear: str = "", 
     return " ".join(" ".join(bits).split())
 
 
-def _apply_references(cast: list[dict], refs: list[dict]) -> None:
+def _apply_references(cast: list[dict], refs: list[dict], wardrobe: list[str]) -> None:
     """Each performer takes the next photo, then the list repeats. The World still wrote the
-    clothes, the place and the light; the photo replaces the invented face. Gender and age are
-    cleared so the vision check does not reject the photo for the World role's gender, and
+    place and the light; the photo replaces the invented face. wardrobe (the outfits of the roles
+    the World line names) dresses them in turn, else each character's own clothes. Gender and age
+    are cleared so the vision check does not reject the photo for the World role's gender, and
     eyewear is allowed so glasses in the photo are not a fault."""
     for c in cast:
         ref = refs[int(c["id"]) % len(refs)]
         name = ref["name"]
         twin = c.get("twin") or {}
         ck = c.get("check") or {}
+        size = c.get("size") or "close"
+        wear = ck.get("wear") or twin.get("wear") or ""
+        if wardrobe:
+            wear = wardrobe[int(c["id"]) % len(wardrobe)]
+            wear = casting._top_only(casting._no_feet(wear)) if size == "close" else                 casting._no_feet(wear) if size != "wide" else wear
         c["portrait"] = _reference_portrait(
             name, ref.get("note", ""), c.get("portrait") or "",
-            wear=ck.get("wear") or twin.get("wear") or "",
+            wear=wear,
             light=twin.get("light") or "",
             place=ck.get("place") or twin.get("background") or "",
             era=twin.get("detail") or "",
-            size=c.get("size") or "close")
+            size=size)
         # the clip prompt named the World role ("a rapper"), and LTX acts out every person a prompt names
         if c.get("who") and c.get("sing"):
             who = _person_name(name)
@@ -345,10 +351,13 @@ def _apply_references(cast: list[dict], refs: list[dict]) -> None:
         c["ref_path"] = ref["path"]
         c["ref_name"] = name
         c["who"] = name
+        clothes = _clothes_only(wear)
         twin = dict(c.get("twin") or {})
         twin["who"] = name
+        twin["wear"] = f"Wearing {clothes}." if clothes else ""
         c["twin"] = twin
         ck = dict(c.get("check") or {})
+        ck["wear"] = clothes
         ck["role"] = name
         ck["gender"] = ""
         ck["age"] = ""
@@ -530,7 +539,13 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
                 jobs.append((f"ref{i:02d}", graphs.artist_portrait(artist_path=head, prompt=_REF_SHEET, seed=seed + i,
                                                                     prefix=f"{rel}/refs/ref{i:02d}_clean", size2=s2).nodes))
                 r["path"] = os.path.join(run_dir, "refs", f"ref{i:02d}_clean_00001_.png")
-            _apply_references(cast, refs)
+            # the photo is the star of every shot, so it wears the stars' clothes: the roles the World
+            # line names, not the guard or the driver the World adds around them
+            chars = bible.get("characters") or []
+            told = sorted((q, ch["wear"]) for q, ch in zip(themes.story_positions(chars, bible.get("theme", "")), chars)
+                          if q is not None and ch.get("wear")) if chars else []
+            p["ref_wardrobe"] = [w for _, w in told]
+            _apply_references(cast, refs, p["ref_wardrobe"])
             p["references"] = [{"name": r["name"], "path": r["path"], "note": r.get("note", "")} for r in refs]
             log(f"[OneShotMV] reference characters: {len(refs)} photo(s), each re-staged by Qwen-Image 2.1, "
                 f"cycled across the singers: " + ", ".join(r["name"] for r in refs))
