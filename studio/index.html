@@ -1021,7 +1021,7 @@ function drawRefCopy(){
     ? "The World line still sets the clothes, the places and the light. The photos below are the faces."
     : "One line is enough. The characters you name are cast first, in the order you name them, and every shot is a different invented person.";
   if (note) note.textContent = n
-    ? "Cast in this order and reused across the singers. Each photo is a Krea character reference, so the face follows the photo. Cutaways can still be other people from the World. Set cutaways to none if every shot should be these people."
+    ? "Cast in this order and reused across the singers. Each photo is re-staged by Qwen-Image 2.1, so the face follows the photo. Cutaways use the same photos."
     : "Add photos of the people who should be in the video. They are cast in this order and reused. Leave this empty for an invented cast.";
   if (face) face.textContent = n
     ? "Use music you have the rights to. These photos are the people in the video."
@@ -1141,7 +1141,7 @@ async function viewPlan(run){
      <div><div class="kv">Cast</div><div style="font-size:14px;color:#D4D4D4">${(w.references||[]).length ? `Reference photos, in order: ${esc(w.references.join(", "))}.` : `${w.characters} characters in the World.`}${(w.left_out||[]).length ? ` Not in this cut: ${esc(w.left_out.slice(0,10).join(", "))}${w.left_out.length > 10 ? "…" : ""}.` : ""}</div></div>
      <div><div class="kv">Energy</div><div class="emap" aria-hidden="true">${levels}</div>
        <ul class="tiny" style="margin:8px 0 0;padding-left:16px">${(r.energy_map||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
-     <p class="tiny" style="margin:0">${(w.references||[]).length ? "The photos are the faces, cast in that order and reused. The World line still sets the clothes, the places and the light. Cutaways can still be other people from the World." : "To change who is in it, edit the World line: the characters it names are cast first, in that order. Same seed, same cast; a new seed re-casts."}</p>
+     <p class="tiny" style="margin:0">${(w.references||[]).length ? "The photos are the faces, cast in that order and reused. The World line still sets the clothes, the places and the light. Cutaways use the same photos." : "To change who is in it, edit the World line: the characters it names are cast first, in that order. Same seed, same cast; a new seed re-casts."}</p>
    </section>
    <section class="card" style="flex:999 1 720px;min-width:0" aria-labelledby="sh">
      <div class="row" style="margin-bottom:10px"><h2 class="label" id="sh">Every shot</h2><span class="tiny">${sing} sung, ${cut} cutaway${cut===1?"":"s"}</span></div>

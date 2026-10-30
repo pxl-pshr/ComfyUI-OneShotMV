@@ -160,10 +160,10 @@ Some things that help:
   the Director: a JSON list of `{"name", "path"}`, paths in ComfyUI's input folder). They are
   cast in that order and reused across the singers. The World line still sets the clothes, the
   places and the light. Pose-matched looks turn off, so a look edit does not recast the face.
-  Cutaways can still be other people from the World; set cutaways to none if every shot should
-  be these people. Each photo is a Krea 2 character reference for that person, so the
-  face, hair and glasses follow the photo. The World line still changes the clothes, the
-  place and the light. It is a new photograph of that person, not a copy of the photo.
+  Cutaways use the same photos in the World's clothes and places. Each photo is cropped to the
+  head and re-staged by Qwen-Image 2.1, the artist pack's identity edit, so the face, hair and
+  glasses follow the photo and the outfit comes from the World. Jewellery or a hand at the face
+  is in the crop and can carry over; a plain head-and-shoulders photo works best.
 
 ## Settings
 

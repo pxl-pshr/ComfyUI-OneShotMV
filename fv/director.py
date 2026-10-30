@@ -15,7 +15,7 @@ import urllib.request
 
 import numpy as np
 
-from . import beat, casting, formats, graphs, plan as planner, stems
+from . import beat, casting, faces, formats, graphs, plan as planner, stems
 
 
 def _slug(s: str) -> str:
@@ -72,8 +72,7 @@ def clip_info(path: str) -> tuple[int, float]:
 # hidden until then, while this module is reloaded on every run.
 _REF_CAP = 12
 _REF_TTL = 30 * 60
-_ENCODE_TEXT = {"CLIPTextEncode": "text", "TextEncodeQwenImageEdit": "prompt",
-                "TextEncodeQwenImageEditPlus": "prompt", "FL_KreaReferenceGuider": "prompt"}
+_ENCODE_TEXT = {"CLIPTextEncode": "text", "TextEncodeQwenImage21": "prompt"}
 
 
 def _search_dirs() -> list[str]:
@@ -280,10 +279,11 @@ def _realism_tail(portrait: str) -> str:
 
 def _reference_portrait(name: str, note: str, portrait: str, *, wear: str = "", light: str = "",
                         place: str = "", era: str = "", size: str = "close") -> str:
-    """Scene for a Krea subject reference. The photo supplies the face, age, hair and glasses.
-    The World supplies clothes, place and light. The node's own subject line already says to
-    follow the scene for the setting, so this text does not describe a second, invented person."""
+    """Qwen-Image 2.1 edit of the photo (image 1). The photo supplies the face, age, hair and
+    glasses; the World supplies clothes, place and light. An edit model keeps whatever it is not
+    told to change, so the photo's own outfit, props and backdrop are named as gone."""
     who = _person_name(name)
+    who = "" if who == "this person" else f" ({who})"
     note = re.sub(r"\s+", " ", (note or "").strip()).strip(".")
     clothes = _clothes_only(wear)
     light = re.sub(r"\s+", " ", (light or "").strip()).strip(".")
@@ -291,11 +291,13 @@ def _reference_portrait(name: str, note: str, portrait: str, *, wear: str = "", 
     era = re.sub(r"\s+", " ", (era or "").strip()).strip(".")
     if light:
         light = light[:1].upper() + light[1:]
+    frame = _REF_FRAME.get(size) or _REF_FRAME["close"]
     bits = [
-        f"{_REF_FRAME.get(size) or _REF_FRAME['close']} of {who}.",
-        "The same person as the reference photo: the same face, the same age, the same bone "
-        "structure, the same skin tone, the same hair and the same glasses.",
-        "Change only the clothes, the place and the light.",
+        f"Photo of the same person as in image 1{who}, photographed again somewhere new: "
+        f"{frame[:1].lower() + frame[1:]}.",
+        "Keep their exact face, age, bone structure, skin tone, hair and glasses.",
+        "New clothes, a new place and new light: none of the outfit, jewellery, props, pose or "
+        "background from image 1.",
     ]
     if note:
         bits.append(note + ".")
@@ -329,6 +331,10 @@ def _apply_references(cast: list[dict], refs: list[dict]) -> None:
             place=ck.get("place") or twin.get("background") or "",
             era=twin.get("detail") or "",
             size=c.get("size") or "close")
+        # the clip prompt named the World role ("a rapper"), and LTX acts out every person a prompt names
+        if c.get("who") and c.get("sing"):
+            who = _person_name(name)
+            c["sing"] = re.sub(re.escape(c["who"]), lambda _: who, c["sing"], flags=re.I)
         c["ref_path"] = ref["path"]
         c["ref_name"] = name
         c["who"] = name
@@ -440,7 +446,8 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
             # characters for every singer and every b-roll candidate
             from . import broll as _broll
             need = p["performers"] + 2 * _broll.slots(p, broll_share) + 2
-            if len(bible.get("characters") or []) < need:
+            # reference photos are the faces, so the World's roles only lend clothes and places
+            if not refs and len(bible.get("characters") or []) < need:
                 bible = themes.extend(bible, need, seed=seed, out_root=out_root, log=log)
                 ed_ = pk["edit"]
                 pk = casting.apply_theme(casting.load_pack(pack), bible)
@@ -507,9 +514,17 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
         p["cast_order"], p["crowd"] = (cast_order or "as written"), pk["casting"]["crowd_mode"]
         cast = casting.cast_voice(pk, p["performers"], seed, sizes, fmt=fmt, leads=leads, phases=phases)
         if refs:
+            os.makedirs(os.path.join(run_dir, "refs"), exist_ok=True)
+            for i, r in enumerate(refs):
+                head = os.path.join(run_dir, "refs", f"ref{i:02d}_head.png")
+                if faces.head_crop(r["path"], head):
+                    r["path"] = head
+                else:
+                    log(f"[OneShotMV] reference {r['name']}: no face found, so the whole photo is used "
+                        "and medium shots may keep its outfit")
             _apply_references(cast, refs)
             p["references"] = [{"name": r["name"], "path": r["path"], "note": r.get("note", "")} for r in refs]
-            log(f"[OneShotMV] reference characters: {len(refs)} photo(s), each a Krea subject reference, "
+            log(f"[OneShotMV] reference characters: {len(refs)} photo(s), each re-staged by Qwen-Image 2.1, "
                 f"cycled across the singers: " + ", ".join(r["name"] for r in refs))
         s1, s2 = formats.portrait_size(fmt)
         port = {}
@@ -519,10 +534,8 @@ def direct(*, audio: np.ndarray, sr: int, out_root: str, mode: str = "voice", pa
                 continue
             name = f"p{c['id']:03d}"
             if c.get("ref_path"):
-                jobs.append((name, graphs.krea2_portrait(prompt=c["portrait"], seed=c["seed"],
-                                                         prefix=f"{rel}/{name}", size1=s1, size2=s2,
-                                                         turbo_only=(label == "fast"),
-                                                         ref_path=c["ref_path"]).nodes))
+                jobs.append((name, graphs.artist_portrait(artist_path=c["ref_path"], prompt=c["portrait"],
+                                                          seed=c["seed"], prefix=f"{rel}/{name}", size2=s2).nodes))
             elif c.get("artist_edit"):
                 jobs.append((name, graphs.artist_portrait(artist_path=artist_path, prompt=c["portrait"],
                                                           seed=c["seed"], prefix=f"{rel}/{name}", size2=s2).nodes))
@@ -770,7 +783,7 @@ def plan_preview(p: dict, queued: bool = True) -> str:
     named = [r for r in named if r]
     if named:
         lines.append("Reference photos, cast in this order and reused: " + ", ".join(named) + ".")
-        lines.append("Cutaways can still be other people from the World.")
+        lines.append("Cutaways show the same photos in the World's places.")
     lines.append("")
     used = set()
     for s in p.get("shots", []):

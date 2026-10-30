@@ -301,7 +301,7 @@ class FVDirector:
                                                 "Empty uses an invented cast, unless the Studio just wrote "
                                                 "input/oneshot-mv/references.json. With photos, Twins on auto "
                                                 "turns pose-matched looks off so a look edit does not recast the face. "
-                                                "Cutaways can still be other people from the World."}),
+                                                "Cutaways use the same photos."}),
         }}
 
     RETURN_TYPES = ("STRING", "STRING")

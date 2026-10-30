@@ -23,8 +23,8 @@
  "klein_unet": "flux-2-klein-9b-fp8.safetensors",
  "klein_te": "qwen_3_8b_fp8mixed.safetensors",
  "klein_vae": "full_encoder_small_decoder.safetensors",
- "qwen21_unet": "qwen_image_2.1_bf16.safetensors",
- "qwen21_te": "qwen3vl_8b_bf16.safetensors",
+ "qwen21_unet": "qwen_image_2.1_int8_convrot.safetensors",
+ "qwen21_te": "qwen3vl_8b_fp8_scaled.safetensors",
  "qwen21_vae": "qwen_image_2.1_vae_bf16.safetensors",
  "dwpose_bbox": "yolox_l.torchscript.pt",
  "dwpose_pose": "dw-ll_ucoco_384_bs5.torchscript.pt"

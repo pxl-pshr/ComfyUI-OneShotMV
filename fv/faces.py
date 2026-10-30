@@ -86,6 +86,39 @@ def detect(rgb, size: int = 320):
     return [float((x + bw / 2) / gw), float((y + bh / 2) / gh), float(bw / gw)]
 
 
+def _posed_face(rgb):
+    """[cx, cy, w] of the largest face, for a posed photo the default cascade misses (glasses,
+    a beard and stage makeup): OpenCV's alt2 cascade at a finer scale step."""
+    import cv2
+    h, w = rgb.shape[:2]
+    s = 480 / max(h, w)
+    small = cv2.cvtColor(cv2.resize(np.ascontiguousarray(rgb), (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA),
+                         cv2.COLOR_RGB2GRAY)
+    gh, gw = small.shape[:2]
+    fs = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_alt2.xml"))         .detectMultiScale(small, 1.05, 3, minSize=(int(0.08 * min(gh, gw)),) * 2)
+    if not len(fs):
+        return None
+    x, y, bw, bh = max(fs, key=lambda q: q[2] * q[3])
+    return [float((x + bw / 2) / gw), float((y + bh / 2) / gh), float(bw / gw)]
+
+
+def head_crop(src: str, dst: str) -> bool:
+    """The head and hair of the photo's largest face, saved to dst. An identity edit of the whole
+    photo keeps its outfit, props and pose in every medium shot; from the head alone it dresses
+    the person as asked. False (nothing written) when no face is found."""
+    from PIL import Image
+    im = Image.open(src).convert("RGB")
+    rgb = np.asarray(im)
+    f = detect(rgb) or _posed_face(rgb)
+    if f is None:
+        return False
+    W, H = im.size
+    cx, cy, fw = f[0] * W, f[1] * H, f[2] * W
+    box = (max(0, cx - 1.3 * fw), max(0, cy - 1.4 * fw), min(W, cx + 1.3 * fw), min(H, cy + 1.1 * fw))
+    im.crop(tuple(round(v) for v in box)).save(dst)
+    return True
+
+
 def track(path: str, every: int = 3, size: int = 320) -> dict | None:
     """{fps, n, every, boxes: [[cx, cy, w] or None per sampled frame]} or None."""
     import cv2

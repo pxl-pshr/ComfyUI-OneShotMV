@@ -26,7 +26,7 @@ PROMPT_NO_WORDS = """You are editing a music video{world}. Write the image promp
 # the track in a medium shot works as a cutaway between sung lines)
 DANCE_STILL = ("Medium shot on a 35mm lens of {who}, wearing {wear}, dancing to the music with loose "
                "shoulders and one arm raised, eyes half closed, mouth closed in a slight smile, not singing. "
-               "{light}. Setting: {place}. Photorealistic film still, an invented person, the only person in frame, "
+               "{light}. Setting: {place}. Photorealistic film still. {ident}, the only person in frame, "
                "natural colour. No text, no lettering.")
 DANCE_MOTION = ("Medium shot of {who} dancing to the beat: shoulders, hips and arms move with the rhythm, the head "
                 "bobs, a relaxed smile, the mouth stays closed, not singing. The handheld camera sways with the "
@@ -39,8 +39,8 @@ DANCE_ARTIST = ("Photo of the same person as in image 1, photographed again some
 # characters caught in a candid moment of their own life, not singing.
 PROMPT_ACTION = """You are editing a music video set in this world: "{world}". One person from it: {who}, {place}. Write what they are doing in a candid moment between the sung lines: one specific, everyday action that belongs to their role and place, with their hands on the real things of their work or life. No musical instruments, microphones, phones, screens, books, papers or anything with writing, and nothing to eat, drink or smoke. At most 10 words, starting with a verb ending in -ing. Answer with the action only."""
 MOMENT_STILL = ("Candid medium shot on a 35mm lens of {who}, wearing {wear}, {action}, absorbed in what they are "
-                "doing, mouth closed, not singing, not looking at the camera. {light}. Setting: {place}. An invented "
-                "person, the only person in frame. No text, no lettering.")
+                "doing, mouth closed, not singing, not looking at the camera. {light}. Setting: {place}. {ident}, "
+                "the only person in frame. No text, no lettering.")
 MOMENT_MOTION = ("Candid medium shot of {who}, {action}: natural, unhurried movement, the mouth stays closed, not "
                  "singing, not looking at the camera. The handheld camera drifts slightly. No one else in frame. "
                  "No text appears.")
@@ -164,6 +164,22 @@ def _prompt_for(p: dict, pack: dict, shot: dict, seed: int, k: int = 0, style: s
 
 
 def _dancer(p: dict, pack: dict, k: int) -> dict:
+    """Who is in a cutaway. With reference photos the next photo is the person, in the World
+    character's clothes and place; the character's description still writes the action."""
+    d = _world_dancer(p, pack, k)
+    refs = p.get("references") or []
+    if not refs:
+        return d
+    from .director import _clothes_only, _person_name
+    ref = refs[k % len(refs)]
+    d.update(role=d["who"], who=_person_name(ref["name"]), wear=_clothes_only(d["wear"]) or d["wear"], ref_path=ref["path"])
+    if d.get("check"):
+        d["check"].update(role=ref["name"], gender="", age="", eyewear=True, wear=d["wear"],
+                          look="the same face as in their reference photo")
+    return d
+
+
+def _world_dancer(p: dict, pack: dict, k: int) -> dict:
     """Who dances in a filler shot: someone from the run's own cast (theme or pack world)."""
     import random
     rng = random.Random(p.get("seed", 1) * 31 + k)
@@ -209,7 +225,7 @@ def _action_for(p: dict, pack: dict, d: dict, seed: int, log=print) -> str:
     from . import theme as themes
     th = p.get("theme") or {}
     world = th.get("theme") or pack.get("about") or "a music video"
-    text = themes.llm(PROMPT_ACTION.format(world=world.replace('"', "'"), who=d["who"], place=d["place"]),
+    text = themes.llm(PROMPT_ACTION.format(world=world.replace('"', "'"), who=d.get("role") or d["who"], place=d["place"]),
                       seed=seed, max_length=60, log=log)
     act = " ".join((text or "").strip().strip('"').split()).split("\n")[0].rstrip(".").strip()
     act = themes._no_props(themes._debrand(act))
@@ -277,6 +293,7 @@ def plan(p: dict, run_dir: str, pack: dict, log=print, candidates: bool = False)
         if kind == "moment":
             d = _dancer(p, pack, k)
             check = d.pop("check", None)
+            d["ident"] = "The same person as in image 1, with a new outfit and place" if d.get("ref_path") else "An invented person"
             d["light"] = d["light"][:1].upper() + d["light"][1:]
             d["action"] = _action_for(p, pack, d, seed=p.get("seed", 1) * 100 + k, log=log)
             img = " ".join((MOMENT_STILL.format(**d) + " " + era).split())
@@ -284,7 +301,10 @@ def plan(p: dict, run_dir: str, pack: dict, log=print, candidates: bool = False)
             motion = period_background(" ".join(MOMENT_MOTION.format(who=d["who"], action=d["action"]).split()) + " " +
                                        f"{d['light']}. Setting: {d['place']}. Photorealistic, full frame with no black bars.",
                                        pera)
-            if stills:
+            if stills and d.get("ref_path"):
+                keys.append(graphs.artist_portrait(artist_path=d["ref_path"], prompt=img_still, seed=seed,
+                                                   prefix=f"{rel}/k{rid:03d}R", size2=s2).nodes)
+            elif stills:
                 keys.append(graphs.krea2_portrait(prompt=img_still, seed=seed, prefix=f"{rel}/k{rid:03d}R",
                                                   size1=s1, size2=s2).nodes)
                 still_job = len(keys) - 1
@@ -298,6 +318,7 @@ def plan(p: dict, run_dir: str, pack: dict, log=print, candidates: bool = False)
         elif kind == "dance":
             d = _dancer(p, pack, k)
             check = d.pop("check", None)
+            d["ident"] = "The same person as in image 1, with a new outfit and place" if d.get("ref_path") else "An invented person"
             d["light"] = d["light"][:1].upper() + d["light"][1:]
             short = d["who"].split(",")[0].split(" with ")[0]
             img = " ".join((DANCE_STILL.format(**d) + " " + era).split())
@@ -306,7 +327,10 @@ def plan(p: dict, run_dir: str, pack: dict, log=print, candidates: bool = False)
                 f"{d['light']}. Setting: {d['place']}. Photorealistic, full frame with no black bars, natural colour, " \
                 "subtle film grain."
             motion = period_background(motion, pera)
-            if stills:
+            if stills and d.get("ref_path"):
+                keys.append(graphs.artist_portrait(artist_path=d["ref_path"], prompt=img_still, seed=seed,
+                                                   prefix=f"{rel}/k{rid:03d}R", size2=s2).nodes)
+            elif stills:
                 keys.append(graphs.krea2_portrait(prompt=img_still, seed=seed, prefix=f"{rel}/k{rid:03d}R",
                                                   size1=s1, size2=s2).nodes)
                 still_job = len(keys) - 1
